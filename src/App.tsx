@@ -1,160 +1,272 @@
+import { useEffect, useMemo, useState } from "react";
 import "./styles.css";
+import ObservationForm from "./ObservationForm";
+import RecordCard from "./RecordCard";
+import {
+  createId,
+  createSeedRecords,
+  emptyDraft,
+  ObservationDraft,
+  ObservationRecord,
+  ObservationVersion,
+  SAMPLE_TYPES,
+  STORAGE_KEY,
+} from "./types";
 
-const project = {
-  "id": "hxwl-06",
-  "port": 5106,
-  "title": "显微镜玻片观察",
-  "subtitle": "样本、多倍率视野与染色观察记录库",
-  "stack": "React + Vite + TypeScript + CSS",
-  "theme": [
-    "#4338ca",
-    "#0d9488",
-    "#db2777"
-  ],
-  "domain": "生物显微观察",
-  "users": [
-    "实验课教师",
-    "学生",
-    "实验管理员"
-  ],
-  "metrics": [
-    "样本数",
-    "视野记录",
-    "染色方法",
-    "重点结构"
-  ],
-  "filters": [
-    "植物组织",
-    "动物组织",
-    "微生物",
-    "血液涂片"
-  ],
-  "fields": [
-    "样本名称",
-    "样本类型",
-    "染色方式",
-    "放大倍数",
-    "观察结构",
-    "视野描述"
-  ],
-  "records": [
-    [
-      "洋葱表皮",
-      "植物组织",
-      "碘液",
-      "400x",
-      "细胞壁清晰，细胞核可见"
-    ],
-    [
-      "人血涂片",
-      "血液涂片",
-      "瑞氏染色",
-      "1000x",
-      "红细胞分布均匀"
-    ],
-    [
-      "草履虫",
-      "微生物",
-      "活体观察",
-      "200x",
-      "纤毛运动明显"
-    ]
-  ]
-};
+type TypeFilter = "全部" | (typeof SAMPLE_TYPES)[number];
+type ReviewFilter = "全部" | "待复看" | "已复看";
 
-const statusColors = ["status-ok", "status-watch", "status-danger"];
+function loadRecords(): ObservationRecord[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as ObservationRecord[];
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch {
+    // 存储不可用时退回内置示例
+  }
+  return createSeedRecords();
+}
 
-function MetricCard({ label, value, index }: { label: string; value: string; index: number }) {
+function draftToVersion(draft: ObservationDraft): Omit<ObservationVersion, "savedAt"> {
+  return {
+    sampleName: draft.sampleName.trim(),
+    sampleType: draft.sampleType as ObservationVersion["sampleType"],
+    stain: draft.stain as ObservationVersion["stain"],
+    magnification: draft.magnification as ObservationVersion["magnification"],
+    structures: draft.structures
+      .map((s) => ({ name: s.name.trim(), confirmed: s.confirmed }))
+      .filter((s) => s.name),
+    description: draft.description.trim(),
+  };
+}
+
+function MetricCard({
+  label,
+  value,
+  hint,
+  index,
+}: {
+  label: string;
+  value: string;
+  hint: string;
+  index: number;
+}) {
+  const statusColors = ["status-ok", "status-watch", "status-danger", ""];
   return (
     <article className="metric-card">
       <span>{label}</span>
       <strong>{value}</strong>
+      <small>{hint}</small>
       <i className={statusColors[index % statusColors.length]} />
     </article>
   );
 }
 
 function App() {
-  const values = project.metrics.map((metric: string, index: number) => {
-    const base = [84, 12, 31, 7][index % 4];
-    return String(base + index * 3);
-  });
+  const [records, setRecords] = useState<ObservationRecord[]>(loadRecords);
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>("全部");
+  const [reviewFilter, setReviewFilter] = useState<ReviewFilter>("全部");
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+    } catch {
+      // 忽略写入失败，内存中仍可继续使用
+    }
+  }, [records]);
+
+  const addRecord = (draft: ObservationDraft) => {
+    const record: ObservationRecord = {
+      id: createId(),
+      needsReview: false,
+      versions: [{ ...draftToVersion(draft), savedAt: new Date().toISOString() }],
+    };
+    setRecords((prev) => [record, ...prev]);
+  };
+
+  const toggleReviewFlag = (id: string) => {
+    setRecords((prev) =>
+      prev.map((record) =>
+        record.id === id
+          ? { ...record, needsReview: !record.needsReview }
+          : record
+      )
+    );
+  };
+
+  const saveReview = (id: string, draft: ObservationDraft) => {
+    setRecords((prev) =>
+      prev.map((record) =>
+        record.id === id
+          ? {
+              ...record,
+              needsReview: false,
+              versions: [
+                ...record.versions,
+                { ...draftToVersion(draft), savedAt: new Date().toISOString() },
+              ],
+            }
+          : record
+      )
+    );
+  };
+
+  const resetToSeeds = () => {
+    if (
+      window.confirm(
+        "确定清空当前所有记录并恢复为洋葱表皮、人血涂片、草履虫三个示例吗？该操作不可撤销。"
+      )
+    ) {
+      setRecords(createSeedRecords());
+    }
+  };
+
+  const metrics = useMemo(() => {
+    const current = records.map((r) => r.versions[r.versions.length - 1]);
+    const stainSet = new Set(current.map((v) => v.stain));
+    const confirmedSet = new Set(
+      current.flatMap((v) =>
+        v.structures.filter((s) => s.confirmed).map((s) => s.name)
+      )
+    );
+    const reviewCount = records.filter(
+      (r) => r.needsReview || r.versions.length > 1
+    ).length;
+    return [
+      { label: "样本记录", value: String(records.length), hint: "含内置 3 个示例" },
+      { label: "染色方法", value: String(stainSet.size), hint: "当前记录使用的染色方式" },
+      { label: "已确认结构", value: String(confirmedSet.size), hint: "去重后的结构种类" },
+      { label: "复看/待复看", value: String(reviewCount), hint: "每次复看均保留历史版本" },
+    ];
+  }, [records]);
+
+  const visibleRecords = useMemo(() => {
+    return records.filter((record) => {
+      const current = record.versions[record.versions.length - 1];
+      if (typeFilter !== "全部" && current.sampleType !== typeFilter) return false;
+      if (reviewFilter === "待复看" && !record.needsReview) return false;
+      if (reviewFilter === "已复看" && record.versions.length === 1) return false;
+      return true;
+    });
+  }, [records, typeFilter, reviewFilter]);
 
   return (
     <main className="app-shell">
       <section className="hero">
         <div>
-          <p className="eyebrow">{project.id} · port {project.port}</p>
-          <h1>{project.title}</h1>
-          <p className="subtitle">{project.subtitle}</p>
+          <p className="eyebrow">hxwl-06 · port 5106</p>
+          <h1>显微镜玻片观察记录库</h1>
+          <p className="subtitle">
+            样本、多倍率视野与染色观察的可追溯记录：新建需填写样本类型、染色方式、放大倍数和重点结构；
+            复看结论覆盖当前版本，历史版本完整保留，刷新后仍可追溯。
+          </p>
         </div>
         <div className="stack-card">
-          <span>技术栈</span>
-          <strong>{project.stack}</strong>
+          <span>数据保存</span>
+          <strong>浏览器本地存储（localStorage）</strong>
+          <small>首次打开内置洋葱表皮、人血涂片、草履虫三个示例</small>
         </div>
       </section>
 
       <section className="metrics-grid">
-        {project.metrics.map((metric: string, index: number) => (
-          <MetricCard key={metric} label={metric} value={values[index]} index={index} />
+        {metrics.map((metric, index) => (
+          <MetricCard
+            key={metric.label}
+            label={metric.label}
+            value={metric.value}
+            hint={metric.hint}
+            index={index}
+          />
         ))}
       </section>
 
       <section className="workspace">
         <aside className="panel narrow">
-          <h2>角色</h2>
-          <div className="chips">
-            {project.users.map((user: string) => (
-              <span key={user}>{user}</span>
+          <h2>按样本类型筛选</h2>
+          <div className="chips muted filter-group">
+            {(["全部", ...SAMPLE_TYPES] as TypeFilter[]).map((filter) => (
+              <button
+                key={filter}
+                className={typeFilter === filter ? "chip-selected" : ""}
+                onClick={() => setTypeFilter(filter)}
+              >
+                {filter}
+              </button>
             ))}
           </div>
-          <h2>筛选</h2>
-          <div className="chips muted">
-            {project.filters.map((filter: string) => (
-              <button key={filter}>{filter}</button>
+          <h2>按复看状态筛选</h2>
+          <div className="chips muted filter-group">
+            {(["全部", "待复看", "已复看"] as ReviewFilter[]).map((filter) => (
+              <button
+                key={filter}
+                className={reviewFilter === filter ? "chip-selected" : ""}
+                onClick={() => setReviewFilter(filter)}
+              >
+                {filter}
+              </button>
             ))}
           </div>
+          <div className="rules-card">
+            <h2>保存规则</h2>
+            <ul>
+              <li>样本类型、染色方式、放大倍数、重点结构均为必填。</li>
+              <li>低于 400x 不能把细胞核标为已确认。</li>
+              <li>染色方式须与样本类型匹配，否则阻止保存并说明原因。</li>
+              <li>复看覆盖当前结论，但保留上一版的时间与完整内容。</li>
+            </ul>
+          </div>
+          <button className="reset-button" onClick={resetToSeeds}>
+            恢复内置示例
+          </button>
         </aside>
 
         <section className="panel">
           <div className="section-heading">
             <div>
-              <p>{project.domain}</p>
-              <h2>记录字段</h2>
+              <p>新建观察</p>
+              <h2>录入新玻片记录</h2>
             </div>
-            <button className="primary-action">新增记录</button>
           </div>
-          <div className="field-grid">
-            {project.fields.map((field: string) => (
-              <label key={field}>
-                <span>{field}</span>
-                <input placeholder={"填写" + field} />
-              </label>
-            ))}
-          </div>
+          <ObservationForm
+            mode="create"
+            initialDraft={emptyDraft()}
+            submitLabel="保存观察记录"
+            onSubmit={addRecord}
+          />
         </section>
       </section>
 
       <section className="records panel">
         <div className="section-heading">
           <div>
-            <p>示例数据</p>
-            <h2>近期记录</h2>
+            <p>观察记录库</p>
+            <h2>
+              记录列表（{visibleRecords.length}/{records.length}）
+            </h2>
           </div>
-          <button>导出摘要</button>
         </div>
-        <div className="record-list">
-          {project.records.map((record: string[], index: number) => (
-            <article key={record.join("-")} className="record-card">
-              <div className="record-index">{String(index + 1).padStart(2, "0")}</div>
-              <div>
-                <h3>{record[0]}</h3>
-                <p>{record.slice(1).join(" · ")}</p>
-              </div>
-            </article>
-          ))}
-        </div>
+        {visibleRecords.length === 0 ? (
+          <p className="empty-state">当前筛选条件下没有记录。</p>
+        ) : (
+          <div className="record-list">
+            {visibleRecords.map((record, index) => (
+              <RecordCard
+                key={record.id}
+                record={record}
+                index={index}
+                onToggleReviewFlag={toggleReviewFlag}
+                onSaveReview={saveReview}
+              />
+            ))}
+          </div>
+        )}
       </section>
+
+      <footer className="app-footer">
+        所有记录保存在本机浏览器中；刷新页面后记录与完整变更历史仍然保留。
+      </footer>
     </main>
   );
 }
